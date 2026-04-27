@@ -47,9 +47,9 @@ pip install opencv-python pytesseract
 ### Smart fallback (no scheme richiesto)
 | Categoria     | Esempi                                                     |
 |---------------|------------------------------------------------------------|
-| `path_route`  | `/api/v2/users/details`, `/cameraAccrediti/testata/30?code=…` |
+| `path_route`  | `/api/v2/users/details`, `/Accrediti/testata/30?code=…` |
 | `query_secret`| `?code=ABC123`, `?token=…`, `?sid=…`, `?nonce=…`, `?csrf=…` |
-| `long_camel`  | `cameraAccreditiGiornalisti`, `aggiornaInformazioniUtente` |
+| `long_camel`  | `AccreditiGiornalisti`, `aggiornaInformazioniUtente` |
 
 I pattern sono volutamente **precisi**: niente match parziali su parole comuni (`mailbox`, `ghost`, `hostname` non vengono toccate per errore).
 `long_camel` è case-sensitive (`(?-i:...)`): identificatori ALLCAPS (`HTTPSCONNECTION`) non vengono redatti.
@@ -91,7 +91,7 @@ Per oscurare parole arbitrarie in aggiunta ai pattern automatici:
 ```bash
 python3 redactor.py \
   --input ./img_in --output ./img_out \
-  --custom-orgs camera ufficio reparto \
+  --custom-orgs organizzazione ufficio reparto \
   --custom-hosts mioserver1 mioserver2
 ```
 
