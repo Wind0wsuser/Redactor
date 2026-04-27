@@ -18,6 +18,7 @@ pip install opencv-python pytesseract
 
 ## Pattern riconosciuti
 
+### Base
 | Categoria   | Esempi                                          |
 |-------------|-------------------------------------------------|
 | `url`       | `https://foo.com/path`, `www.bar.it`, `ftp://…` |
@@ -30,7 +31,28 @@ pip install opencv-python pytesseract
 | `username`  | `username: pippo`, `nome utente: pluto`         |
 | `phone`     | `+39 333 1234567`, `0039-02-1234567`            |
 
+### HTTP / Burp Suite (dump request/response, screenshot Burp)
+| Categoria        | Esempi                                          |
+|------------------|-------------------------------------------------|
+| `cookie_line`    | `Set-Cookie: foo=bar; Path=/`, `Cookie: sid=…`  |
+| `auth_line`      | `Authorization: Bearer …`, `Authorization: Basic …` |
+| `api_key_header` | `X-API-Key: …`, `X-Csrf-Token: …`, `X-Forwarded-For: …` |
+| `bearer_token`   | `Bearer eyJ…`                                   |
+| `basic_token`    | `Basic dXNlcjpwYXNz`                            |
+| `jwt`            | `eyJhbGciOi….payload.sig`                       |
+| `session_cookie` | `JSESSIONID=…`, `PHPSESSID=…`, `XSRF-TOKEN=…`   |
+| `session_generic`| qualsiasi `*session*=value`                     |
+| `generic_secret` | `api_key=…`, `password=…`, `token=…` (16+ char) |
+
+### Smart fallback (no scheme richiesto)
+| Categoria     | Esempi                                                     |
+|---------------|------------------------------------------------------------|
+| `path_route`  | `/api/v2/users/details`, `/cameraAccrediti/testata/30?code=…` |
+| `query_secret`| `?code=ABC123`, `?token=…`, `?sid=…`, `?nonce=…`, `?csrf=…` |
+| `long_camel`  | `cameraAccreditiGiornalisti`, `aggiornaInformazioniUtente` |
+
 I pattern sono volutamente **precisi**: niente match parziali su parole comuni (`mailbox`, `ghost`, `hostname` non vengono toccate per errore).
+`long_camel` è case-sensitive (`(?-i:...)`): identificatori ALLCAPS (`HTTPSCONNECTION`) non vengono redatti.
 
 ## Uso
 
@@ -78,7 +100,12 @@ Match **substring case-insensitive**.
 ## Output
 
 - **Immagini**: rettangoli neri sopra le parole identificate dall'OCR.
+  - **Multi-pass OCR (4 pass)** per gestire screenshot misti chiaro/scuro (es. dump Burp con bande dark): Otsu, invert+CLAHE+Otsu, adaptive threshold, invert+CLAHE+adaptive aggressivo.
+  - Soglia confidence adattiva: pass 1-2 conf≥30 (Otsu pulito), pass 3-4 conf≥5 (adaptive rumoroso, sicuro perché redact solo su match regex).
+  - Padding 2px per coprire descender/strikethrough.
 - **Testi**: i match sono sostituiti con blocchi `█` di lunghezza ≈ originale, preservando struttura HTML/JSON.
+  - Custom strings applicati **prima** dei pattern, ordinati per lunghezza DESC (parole lunghe prima): evita che match parziali blocchino i superset.
+  - Funziona su HTML su singola riga (es. export CherryTree): pattern HTTP terminano su `<` / newline / quote.
 
 ## Estensioni testuali supportate
 

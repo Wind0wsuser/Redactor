@@ -13,3 +13,16 @@ out/
 output/
 img_out/
 html_out/
+
+# config locali / dati sensibili — NON pubblicare
+.claude/
+*.png
+*.jpg
+*.jpeg
+*.bmp
+*.tif
+*.tiff
+EVIDENZA*
+test_*/
+testdata/
+samples/

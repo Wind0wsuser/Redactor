@@ -35,6 +35,46 @@ PATTERNS = {
 
     # Telefono internazionale/IT: prefisso +XX o 00XX, 8-13 cifre totali
     "phone": r'(?:(?<![\w\d])(?:\+|00)\d{1,3}[\s\.\-]?)?(?:\(\d{2,4}\)[\s\.\-]?)?\d{2,4}[\s\.\-]?\d{2,4}[\s\.\-]?\d{2,4}\b',
+
+    # --- HTTP / Burp Suite headers (request/response dump) ---
+    # NB: termina su < (tag HTML), newline, " o virgolette → funziona su HTML single-line
+    # Set-Cookie / Cookie: nome header + valore
+    "cookie_line": r'(?i)\b(?:Set-Cookie|Cookie)\s*:\s*[^<\r\n"\']{1,4096}',
+
+    # Authorization: Bearer/Basic/Digest
+    "auth_line": r'(?i)\bAuthorization\s*:\s*[^<\r\n"\']{1,4096}',
+
+    # Header API key / token tipici
+    "api_key_header": r'(?i)\bX-(?:API[\-_]?Key|Auth[\-_]?Token|Access[\-_]?Token|Csrf[\-_]?Token|Session[\-_]?Token|Refresh[\-_]?Token|Forwarded[\-_]?For|Real[\-_]?IP)\s*:\s*[^<\r\n"\']{1,4096}',
+
+    # Bearer / Basic token inline (anche fuori da header)
+    "bearer_token": r'\bBearer\s+[A-Za-z0-9\-_=\.~+/]{8,}={0,2}',
+    "basic_token": r'\bBasic\s+[A-Za-z0-9+/=]{8,}={0,2}',
+
+    # JWT (3 segmenti base64url)
+    "jwt": r'\beyJ[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]+\b',
+
+    # Cookie session noti: nome=valore
+    "session_cookie": r'(?i)\b(?:JSESSIONID|PHPSESSID|ASPSESSIONID[A-Z0-9]+|ASP\.NET_SessionId|connect\.sid|laravel_session|session_id|sessionid|csrftoken|XSRF-TOKEN|access_token|refresh_token|id_token|auth_token|api_key|apikey)=[^;\s"\'<>&]+',
+
+    # Session cookie generici: qualsiasi *session*=value o *session*:value
+    "session_generic": r'(?i)\b[\w\-]*session[\w\-]*\s*[:=]\s*["\']?[^;\s"\'<>&,]{4,}["\']?',
+
+    # API key generiche: chiave=valore lungo (32+ char base64-like)
+    "generic_secret": r'(?i)\b(?:api[_\-]?key|secret|token|password|passwd|pwd)[\s]*[:=][\s]*["\']?[A-Za-z0-9+/=_\-\.]{16,}["\']?',
+
+    # Path/route applicativo: /seg1/seg2/seg3... (3+ segmenti) ± querystring
+    # Cattura href, dump HTTP, JS inline anche senza scheme http(s)://
+    "path_route": r'(?<![A-Za-z0-9])/(?:[A-Za-z][A-Za-z0-9_\-]{2,}/){2,}[A-Za-z0-9][A-Za-z0-9_\-\.]*(?:\?[^\s<>"\'()]{1,512})?',
+
+    # Query/URL secret: ?code=, ?token=, ?key=, ?auth=, ?sid=, ?tk=, ?session=
+    "query_secret": r'(?i)(?<![A-Za-z0-9])(?:code|token|key|auth|secret|pass|sid|tk|session|nonce|state|csrf|otp)=[A-Za-z0-9_\-\.]{6,}',
+
+    # Identificatore camelCase lungo (12+ char, mix lower+upper)
+    # cattura: cameraAccreditiGiornalisti, aggiornaInformazioniUtente, ecc.
+    # esclude: ALLCAPS (gestiti altrove), parole tutte lower (no segnale)
+    # NB: (?-i:...) forza case-sensitive anche se chiamato con re.IGNORECASE
+    "long_camel": r'(?-i:\b(?=[A-Za-z]*[a-z])(?=[A-Za-z]*[A-Z])[A-Za-z]{12,}\b)',
 }
 
 # AUTO_KEYWORDS ora regex con word boundary (no substring match)
@@ -47,9 +87,49 @@ AUTO_KEYWORDS = [
     r'\bnome\s*utente\b', r'\bpassword\b', r'\bpwd\b', r'\blogin\b',
 ]
 
-def preprocess(img):
+OCR_CONFIG = r'--oem 1 --psm 6 -l ita+eng'
+
+def _preprocess_passes(img):
+    """Genera multi-pass per gestire sia testo scuro/chiaro che bande miste.
+    Returns: lista di immagini binarie, scale factor (per remap coordinate)."""
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    return cv2.threshold(gray, 150, 255, cv2.THRESH_BINARY)[1]
+
+    # upscale: 3x se piccola, 2x media, 1x grande
+    h, w = gray.shape
+    if max(h, w) < 1000:
+        scale = 3
+    elif max(h, w) < 2000:
+        scale = 2
+    else:
+        scale = 1
+    if scale > 1:
+        gray = cv2.resize(gray, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
+
+    denoised = cv2.bilateralFilter(gray, 5, 50, 50)
+
+    # PASS 1: testo scuro su chiaro (Otsu standard)
+    _, p1 = cv2.threshold(denoised, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+
+    # PASS 2: testo chiaro su scuro (invert + CLAHE + Otsu)
+    inv = cv2.bitwise_not(denoised)
+    clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
+    eq = clahe.apply(inv)
+    _, p2 = cv2.threshold(eq, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+
+    # PASS 3: adaptive threshold (gestisce variazioni locali, banner colorati)
+    p3 = cv2.adaptiveThreshold(denoised, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+                               cv2.THRESH_BINARY, 31, 10)
+
+    # PASS 4: testo chiaro su scuro con bande miste (invert+CLAHE + adaptive aggressivo)
+    p4 = cv2.adaptiveThreshold(eq, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+                               cv2.THRESH_BINARY, 51, 15)
+
+    return [p1, p2, p3, p4], scale
+
+def preprocess(img):
+    """Compat: ritorna primo pass."""
+    passes, _ = _preprocess_passes(img)
+    return passes[0]
 
 def build_checks(args):
     checks = []
@@ -88,6 +168,20 @@ def auto_mode():
         PATTERNS["mac"],
         PATTERNS["host_line"],
         PATTERNS["username"],
+        # HTTP / Burp
+        PATTERNS["cookie_line"],
+        PATTERNS["auth_line"],
+        PATTERNS["api_key_header"],
+        PATTERNS["bearer_token"],
+        PATTERNS["basic_token"],
+        PATTERNS["jwt"],
+        PATTERNS["session_cookie"],
+        PATTERNS["session_generic"],
+        PATTERNS["generic_secret"],
+        # smart fallback (path/route, query secret, identificatori camelCase)
+        PATTERNS["path_route"],
+        PATTERNS["query_secret"],
+        PATTERNS["long_camel"],
     ]
     return checks
 
@@ -118,27 +212,53 @@ def should_redact(text, checks, custom_hosts, custom_orgs, auto=False):
 
     return False
 
+def _ocr_correct(text):
+    """Correzioni euristiche per errori OCR comuni prima del match regex."""
+    fixes = [
+        (r'\(at\)', '@'), (r'\[at\]', '@'), (r'\s+at\s+', '@'),
+        (r'\(dot\)', '.'), (r'\[dot\]', '.'),
+        (r'\bhxxp', 'http'), (r'\bhttps?\s*:\s*//', lambda m: 'https://' if 's' in m.group(0).lower() else 'http://'),
+    ]
+    out = text
+    for pat, rep in fixes:
+        out = re.sub(pat, rep, out, flags=re.IGNORECASE)
+    return out
+
 def redact_image(image_path, output_path, checks, custom_hosts, custom_orgs, auto):
     img = cv2.imread(str(image_path))
-    proc = preprocess(img)
+    passes, scale = _preprocess_passes(img)
 
-    data = pytesseract.image_to_data(proc, output_type=pytesseract.Output.DICT)
+    # multi-pass: ogni pass cattura testo che gli altri perdono
+    # (chiaro/scuro, contrasto locale variabile)
+    # pass 0,1: conf>=30 (Otsu, alta qualità)
+    # pass 2,3: conf>=5 (adaptive, bande scure rumorose) — sicuro perché redact solo se regex matcha
+    for pass_idx, proc in enumerate(passes):
+        min_conf = 30 if pass_idx < 2 else 5
+        data = pytesseract.image_to_data(proc, output_type=pytesseract.Output.DICT, config=OCR_CONFIG)
+        lines = {}
+        for i in range(len(data['text'])):
+            try:
+                conf = int(data['conf'][i])
+            except (ValueError, TypeError):
+                conf = -1
+            if conf < min_conf or not data['text'][i].strip():
+                continue
+            key = (data['block_num'][i], data['par_num'][i], data['line_num'][i])
+            lines.setdefault(key, []).append(i)
 
-    lines = {}
-    for i in range(len(data['text'])):
-        key = (data['block_num'][i], data['par_num'][i], data['line_num'][i])
-        lines.setdefault(key, []).append(i)
+        for indices in lines.values():
+            raw_text = " ".join(data['text'][i] for i in indices)
+            full_text = _ocr_correct(raw_text)
 
-    for indices in lines.values():
-        full_text = " ".join(data['text'][i] for i in indices)
-
-        if should_redact(full_text, checks, custom_hosts, custom_orgs, auto):
-            for i in indices:
-                x = data['left'][i]
-                y = data['top'][i]
-                w = data['width'][i]
-                h = data['height'][i]
-                cv2.rectangle(img, (x, y), (x+w, y+h), (0,0,0), -1)
+            if should_redact(full_text, checks, custom_hosts, custom_orgs, auto):
+                for i in indices:
+                    x = int(data['left'][i] / scale)
+                    y = int(data['top'][i] / scale)
+                    w = int(data['width'][i] / scale)
+                    h = int(data['height'][i] / scale)
+                    # padding 2px per coprire descender/strikethrough
+                    cv2.rectangle(img, (max(x-2,0), max(y-2,0)),
+                                  (x+w+2, y+h+2), (0, 0, 0), -1)
 
     cv2.imwrite(str(output_path), img)
 
@@ -151,14 +271,17 @@ def _mask(match):
     return REDACT_MARK * max(len(s), 5)
 
 def redact_text_content(text, checks, custom_hosts, custom_orgs):
-    # pattern espliciti
+    # custom PRIMA dei pattern: evita che domain/url consumino substring custom
+    # sort length DESC: parole lunghe prima, evita match parziali che bloccano i superset
+    customs = sorted(
+        {w for w in (list(custom_hosts) + list(custom_orgs)) if w.strip()},
+        key=len, reverse=True
+    )
+    for word in customs:
+        text = re.sub(re.escape(word), _mask, text, flags=re.IGNORECASE)
+    # pattern regex
     for pat in checks:
         text = re.sub(pat, _mask, text, flags=re.IGNORECASE)
-    # custom strings: word-boundary case-insensitive
-    for word in list(custom_hosts) + list(custom_orgs):
-        if not word.strip():
-            continue
-        text = re.sub(re.escape(word), _mask, text, flags=re.IGNORECASE)
     return text
 
 def redact_text_file(path, output_path, checks, custom_hosts, custom_orgs):
