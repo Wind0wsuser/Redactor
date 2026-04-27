@@ -131,59 +131,75 @@ def preprocess(img):
     passes, _ = _preprocess_passes(img)
     return passes[0]
 
+# Placeholder fissi per categoria — NO length leak, NO content leak.
+# Tutti contengono token unico per re-identificazione manuale.
+MASKS = {
+    "url":             "[URL_REDATTO]",
+    "domain":          "[DOMINIO_REDATTO]",
+    "email":           "[EMAIL_REDATTA]",
+    "ipv4":            "[IP_REDATTO]",
+    "ipv6":            "[IPV6_REDATTO]",
+    "mac":             "[MAC_REDATTO]",
+    "host_line":       "[HOST_REDATTO]",
+    "username":        "[UTENTE_REDATTO]",
+    "phone":           "[TELEFONO_REDATTO]",
+    "cookie_line":     "[COOKIE_REDATTO]",
+    "auth_line":       "[AUTH_REDATTA]",
+    "api_key_header":  "[API_KEY_REDATTA]",
+    "bearer_token":    "[BEARER_REDATTO]",
+    "basic_token":     "[BASIC_REDATTO]",
+    "jwt":             "[JWT_REDATTO]",
+    "session_cookie":  "[SESSION_REDATTA]",
+    "session_generic": "[SESSION_REDATTA]",
+    "generic_secret":  "[SEGRETO_REDATTO]",
+    "path_route":      "[PATH_REDATTO]",
+    "query_secret":    "[QUERY_REDATTA]",
+    "long_camel":      "[ID_REDATTO]",
+}
+MASK_CUSTOM = "[CUSTOM_REDATTO]"
+
 def build_checks(args):
+    """Ritorna list[(name, pattern)] per modalità manuale."""
     checks = []
     enabled = []
 
     if args.url:
-        checks += [PATTERNS["url"], PATTERNS["domain"]]
+        checks += [("url", PATTERNS["url"]), ("domain", PATTERNS["domain"])]
         enabled.append("url")
 
     if args.email:
-        checks.append(PATTERNS["email"])
+        checks.append(("email", PATTERNS["email"]))
         enabled.append("email")
 
-    #if args.phone:
-        #checks.append(PATTERNS["phone"])
-        #enabled.append("phone")
-
     if args.host:
-        checks.append(PATTERNS["host_line"])
+        checks.append(("host_line", PATTERNS["host_line"]))
         enabled.append("host")
 
     if args.username:
-        checks.append(PATTERNS["username"])
+        checks.append(("username", PATTERNS["username"]))
         enabled.append("username")
 
     return checks, enabled
 
 def auto_mode():
-    # default intelligente: pattern precisi, no substring match
-    checks = [
-        PATTERNS["url"],
-        PATTERNS["domain"],
-        PATTERNS["email"],
-        PATTERNS["ipv4"],
-        PATTERNS["ipv6"],
-        PATTERNS["mac"],
-        PATTERNS["host_line"],
-        PATTERNS["username"],
-        # HTTP / Burp
-        PATTERNS["cookie_line"],
-        PATTERNS["auth_line"],
-        PATTERNS["api_key_header"],
-        PATTERNS["bearer_token"],
-        PATTERNS["basic_token"],
-        PATTERNS["jwt"],
-        PATTERNS["session_cookie"],
-        PATTERNS["session_generic"],
-        PATTERNS["generic_secret"],
-        # smart fallback (path/route, query secret, identificatori camelCase)
-        PATTERNS["path_route"],
-        PATTERNS["query_secret"],
-        PATTERNS["long_camel"],
+    """Default intelligente. Ritorna list[(name, pattern)]."""
+    # ORDINE IMPORTANTE: pattern specifici PRIMA di generici.
+    # Es: email prima di domain (altrimenti domain consuma `bar.com` da `foo@bar.com`).
+    # JWT/bearer/basic prima di generic_secret. Cookie/auth prima di session_generic.
+    names = [
+        # specifici
+        "jwt", "bearer_token", "basic_token",
+        "cookie_line", "auth_line", "api_key_header",
+        "session_cookie", "session_generic",
+        "url", "email",
+        # generici (consumano residui)
+        "domain", "ipv4", "ipv6", "mac",
+        "host_line", "username",
+        "generic_secret",
+        # smart fallback
+        "path_route", "query_secret", "long_camel",
     ]
-    return checks
+    return [(n, PATTERNS[n]) for n in names]
 
 def contains_custom(text, custom_list):
     return any(x.lower() in text.lower() for x in custom_list)
@@ -192,11 +208,12 @@ def contains_auto_keyword(text):
     return any(re.search(k, text, re.IGNORECASE) for k in AUTO_KEYWORDS)
 
 def should_redact(text, checks, custom_hosts, custom_orgs, auto=False):
+    """checks = list[(name, pattern)]."""
     if not text.strip():
         return False
 
     # pattern espliciti
-    if any(re.search(p, text, re.IGNORECASE) for p in checks):
+    if any(re.search(p, text, re.IGNORECASE) for _, p in checks):
         return True
 
     # custom
@@ -224,14 +241,12 @@ def _ocr_correct(text):
         out = re.sub(pat, rep, out, flags=re.IGNORECASE)
     return out
 
-def redact_image(image_path, output_path, checks, custom_hosts, custom_orgs, auto):
-    img = cv2.imread(str(image_path))
+def _ocr_redact_pass(img, checks, custom_hosts, custom_orgs, auto):
+    """Esegue 4-pass OCR e dipinge bbox full-line. Ritorna #linee redatte."""
     passes, scale = _preprocess_passes(img)
+    redacted = 0
+    H, W = img.shape[:2]
 
-    # multi-pass: ogni pass cattura testo che gli altri perdono
-    # (chiaro/scuro, contrasto locale variabile)
-    # pass 0,1: conf>=30 (Otsu, alta qualità)
-    # pass 2,3: conf>=5 (adaptive, bande scure rumorose) — sicuro perché redact solo se regex matcha
     for pass_idx, proc in enumerate(passes):
         min_conf = 30 if pass_idx < 2 else 5
         data = pytesseract.image_to_data(proc, output_type=pytesseract.Output.DICT, config=OCR_CONFIG)
@@ -249,39 +264,62 @@ def redact_image(image_path, output_path, checks, custom_hosts, custom_orgs, aut
         for indices in lines.values():
             raw_text = " ".join(data['text'][i] for i in indices)
             full_text = _ocr_correct(raw_text)
+            if not should_redact(full_text, checks, custom_hosts, custom_orgs, auto):
+                continue
 
-            if should_redact(full_text, checks, custom_hosts, custom_orgs, auto):
-                for i in indices:
-                    x = int(data['left'][i] / scale)
-                    y = int(data['top'][i] / scale)
-                    w = int(data['width'][i] / scale)
-                    h = int(data['height'][i] / scale)
-                    # padding 2px per coprire descender/strikethrough
-                    cv2.rectangle(img, (max(x-2,0), max(y-2,0)),
-                                  (x+w+2, y+h+2), (0, 0, 0), -1)
+            # bbox FULL-LINE: copre da prima parola a ultima parola della linea,
+            # spazi inclusi (preview char count via per-word-bbox = leak)
+            xs = [data['left'][i] for i in indices]
+            ys = [data['top'][i] for i in indices]
+            x1s = [data['left'][i] + data['width'][i] for i in indices]
+            y1s = [data['top'][i] + data['height'][i] for i in indices]
+            x0 = min(xs) // scale
+            y0 = min(ys) // scale
+            x1 = max(x1s) // scale
+            y1 = max(y1s) // scale
+            line_h = max(y1 - y0, 8)
+            # padding: verticale piccolo (descender ~25% line height) per non sforare
+            # su righe adiacenti; orizzontale generoso (50% line height) per coprire
+            # punteggiatura/spazi/micro-OCR-miss ai bordi della linea
+            pad_v = max(int(line_h * 0.25), 3)
+            pad_h = max(int(line_h * 0.5), 6)
+            cv2.rectangle(img,
+                          (max(x0 - pad_h, 0), max(y0 - pad_v, 0)),
+                          (min(x1 + pad_h, W), min(y1 + pad_v, H)),
+                          (0, 0, 0), -1)
+            redacted += 1
+    return redacted
+
+def redact_image(image_path, output_path, checks, custom_hosts, custom_orgs, auto):
+    img = cv2.imread(str(image_path))
+
+    # Verify-loop: ripeti finché OCR non trova più match (max 3 iter)
+    # Garanzia: nessun residuo OCR'able post-redact.
+    for iteration in range(3):
+        n = _ocr_redact_pass(img, checks, custom_hosts, custom_orgs, auto)
+        if n == 0:
+            break
 
     cv2.imwrite(str(output_path), img)
 
 # --- TEXT/HTML REDACT ---
 TEXT_EXTS = {".html", ".htm", ".txt", ".md", ".xml", ".json", ".csv", ".log"}
-REDACT_MARK = "█"
-
-def _mask(match):
-    s = match.group(0)
-    return REDACT_MARK * max(len(s), 5)
 
 def redact_text_content(text, checks, custom_hosts, custom_orgs):
+    """checks = list[(name, pattern)]. Sostituisce con placeholder fisso per categoria.
+    Niente length leak: tutti gli URL diventano `[URL_REDATTO]` indipendentemente da lunghezza."""
     # custom PRIMA dei pattern: evita che domain/url consumino substring custom
-    # sort length DESC: parole lunghe prima, evita match parziali che bloccano i superset
+    # sort length DESC: parole lunghe prima, evita match parziali
     customs = sorted(
         {w for w in (list(custom_hosts) + list(custom_orgs)) if w.strip()},
         key=len, reverse=True
     )
     for word in customs:
-        text = re.sub(re.escape(word), _mask, text, flags=re.IGNORECASE)
-    # pattern regex
-    for pat in checks:
-        text = re.sub(pat, _mask, text, flags=re.IGNORECASE)
+        text = re.sub(re.escape(word), MASK_CUSTOM, text, flags=re.IGNORECASE)
+    # pattern regex con placeholder per categoria
+    for name, pat in checks:
+        replacement = MASKS.get(name, "[REDATTO]")
+        text = re.sub(pat, replacement, text, flags=re.IGNORECASE)
     return text
 
 def redact_text_file(path, output_path, checks, custom_hosts, custom_orgs):

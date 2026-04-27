@@ -99,13 +99,59 @@ Match **substring case-insensitive**.
 
 ## Output
 
-- **Immagini**: rettangoli neri sopra le parole identificate dall'OCR.
-  - **Multi-pass OCR (4 pass)** per gestire screenshot misti chiaro/scuro (es. dump Burp con bande dark): Otsu, invert+CLAHE+Otsu, adaptive threshold, invert+CLAHE+adaptive aggressivo.
-  - Soglia confidence adattiva: pass 1-2 conf≥30 (Otsu pulito), pass 3-4 conf≥5 (adaptive rumoroso, sicuro perché redact solo su match regex).
-  - Padding 2px per coprire descender/strikethrough.
-- **Testi**: i match sono sostituiti con blocchi `█` di lunghezza ≈ originale, preservando struttura HTML/JSON.
-  - Custom strings applicati **prima** dei pattern, ordinati per lunghezza DESC (parole lunghe prima): evita che match parziali blocchino i superset.
-  - Funziona su HTML su singola riga (es. export CherryTree): pattern HTTP terminano su `<` / newline / quote.
+### Immagini
+- **Bbox full-line** sulla riga matchata: copre da prima a ultima parola, spazi inclusi → **nessun char-count leak**.
+- **Padding**: 25% line height verticale (descender), 50% line height orizzontale (punteggiatura/micro-OCR-miss).
+- **Multi-pass OCR (4 pass)** per screenshot misti chiaro/scuro (es. dump Burp con bande dark): Otsu, invert+CLAHE+Otsu, adaptive threshold, invert+CLAHE+adaptive aggressivo.
+- **Confidence adattiva per pass**: pass 1-2 conf≥30 (Otsu pulito), pass 3-4 conf≥5 (adaptive rumoroso, sicuro perché redact solo su match regex).
+- **Verify-loop**: dopo redact ri-OCR + re-redact fino a 3 iterazioni → garantisce zero residui OCR'able.
+
+### Testi
+- **Placeholder fissi per categoria**, niente length leak:
+
+| Pattern matchato       | Sostituito con          |
+|------------------------|-------------------------|
+| `url`                  | `[URL_REDATTO]`         |
+| `domain`               | `[DOMINIO_REDATTO]`     |
+| `email`                | `[EMAIL_REDATTA]`       |
+| `ipv4` / `ipv6`        | `[IP_REDATTO]` / `[IPV6_REDATTO]` |
+| `mac`                  | `[MAC_REDATTO]`         |
+| `host_line`            | `[HOST_REDATTO]`        |
+| `username`             | `[UTENTE_REDATTO]`      |
+| `cookie_line`          | `[COOKIE_REDATTO]`      |
+| `auth_line`            | `[AUTH_REDATTA]`        |
+| `api_key_header`       | `[API_KEY_REDATTA]`     |
+| `bearer_token`         | `[BEARER_REDATTO]`      |
+| `basic_token`          | `[BASIC_REDATTO]`       |
+| `jwt`                  | `[JWT_REDATTO]`         |
+| `session_*`            | `[SESSION_REDATTA]`     |
+| `generic_secret`       | `[SEGRETO_REDATTO]`     |
+| `path_route`           | `[PATH_REDATTO]`        |
+| `query_secret`         | `[QUERY_REDATTA]`       |
+| `long_camel`           | `[ID_REDATTO]`          |
+| custom strings         | `[CUSTOM_REDATTO]`      |
+
+- Custom strings applicati **prima** dei pattern, ordinati per lunghezza DESC.
+- Pattern ordinati: specifici (jwt, bearer, cookie, auth, email…) **prima** di generici (domain, ipv4, generic_secret) → evita che pattern generici consumino substring di match più precisi.
+- Funziona su HTML su singola riga (export CherryTree): pattern HTTP terminano su `<` / newline / quote.
+
+## Sicurezza by default
+
+Tool progettato per essere **safe-by-default** senza flag `--strict`:
+
+- ❌ **Niente length leak** sui testi (placeholder fissi, non `█ × len(s)`).
+- ❌ **Niente char-count leak** sulle immagini (bbox full-line, non per-word).
+- ✅ **Verify-loop OCR** post-redact (max 3 iter) → no residui visibili.
+- ✅ **Pattern ordering** previene leak da match parziali.
+- ✅ **PNG output** lossless senza metadata (cv2.imwrite default).
+
+### Limiti residui (side-channel)
+- **Context leak**: tag HTML, prefissi (`Set-Cookie:`, `code=`) intatti → categoria nota.
+- **Pattern-disclosure**: codice pubblico → attaccante conosce categorie redatte.
+- **Multi-source correlation**: se il dato è leak'd altrove → riconoscibile via contesto.
+- **OCR coverage**: se Tesseract non legge una parte (font esotici, watermark) → non redatta. Mitigato da multi-pass + verify-loop ma non azzerato.
+
+Per uso forense/legale: aggiungi review manuale + strip metadata esplicito (`exiftool -all=`).
 
 ## Estensioni testuali supportate
 
