@@ -2,7 +2,7 @@
 
 Tool offline per oscurare informazioni sensibili (URL, email, IP, host, username, telefoni, MAC, domini) da **immagini** (OCR via Tesseract) e **file testuali** (HTML / TXT / MD / XML / JSON / CSV / LOG).
 
-Pensato per screenshot di terminali, documenti tecnici, dump HTTP e simili: lavora in locale, niente API esterne.
+Pensato per screenshot di terminali, documenti tecnici, dump HTTP e simili: lavora in locale, niente API esterne. Io l'ho progettato per Offuscare Dati da poter passare in modo sicuro all'AI di turno.
 
 ## Requisiti
 
