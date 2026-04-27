@@ -71,7 +71,7 @@ PATTERNS = {
     "query_secret": r'(?i)(?<![A-Za-z0-9])(?:code|token|key|auth|secret|pass|sid|tk|session|nonce|state|csrf|otp)=[A-Za-z0-9_\-\.]{6,}',
 
     # Identificatore camelCase lungo (12+ char, mix lower+upper)
-    # cattura: cameraAccreditiGiornalisti, aggiornaInformazioniUtente, ecc.
+    # cattura: categorialavorativa, aggiornaInformazioniUtente, ecc.
     # esclude: ALLCAPS (gestiti altrove), parole tutte lower (no segnale)
     # NB: (?-i:...) forza case-sensitive anche se chiamato con re.IGNORECASE
     "long_camel": r'(?-i:\b(?=[A-Za-z]*[a-z])(?=[A-Za-z]*[A-Z])[A-Za-z]{12,}\b)',
@@ -308,6 +308,7 @@ def main():
     parser.add_argument("--username", action="store_true")
 
     parser.add_argument("--custom-hosts", nargs="*", default=[])
+    #usare uno di questi due per fare un po da jolly
     parser.add_argument("--custom-orgs", nargs="*", default=[])
 
     args = parser.parse_args()
