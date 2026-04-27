@@ -1,0 +1,15 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.env
+.idea/
+.vscode/
+.DS_Store
+
+# output cartelle redact (esempi)
+out/
+output/
+img_out/
+html_out/
